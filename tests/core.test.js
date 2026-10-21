@@ -511,13 +511,66 @@ test('places: search by name or brand, nearest first when location is known', ()
   assert.deepEqual(C.searchPlaces('speedway', ps).map((p) => p.id), ['c']);
   assert.deepEqual(C.searchPlaces('p', ps), []); // too short
 });
-test('places: bundled directory file is well-formed', async () => {
+test('places tiles: key for a point, and tiles touched near a boundary', () => {
+  assert.equal(C.placeTileKey(27.47, -82.53), '109_-331');
+  assert.equal(C.placeTileKey(27.5, -82.5), '110_-330'); // exactly on a corner → the tile to the north-east
+  // well inside a tile: only that tile
+  assert.deepEqual(C.placeTilesAround({ lat: 27.375, lon: -82.625 }, 250), ['109_-331']);
+  // 50 m south of the 27.5° line: also the tile to the north
+  const nearEdge = { lat: 27.5 - 50 / 111320, lon: -82.6 };
+  assert.deepEqual(C.placeTilesAround(nearEdge, 250), ['109_-331', '110_-331']);
+  // near a corner: four tiles; filtered to tiles that exist
+  const corner = { lat: 27.5 - 0.0005, lon: -82.5 - 0.0005 };
+  assert.deepEqual(C.placeTilesAround(corner, 250).sort(), ['109_-331', '109_-330', '110_-331', '110_-330'].sort());
+  assert.deepEqual(C.placeTilesAround(corner, 250, new Set(['110_-330'])), ['110_-330']);
+});
+test('places tiles: search order is nearest tile first', () => {
+  const keys = ['111_-330', '108_-329', '109_-331', '110_-331'];
+  assert.deepEqual(C.sortTilesByDistance(keys, { lat: 27.47, lon: -82.53 }).slice(0, 2), ['109_-331', '110_-331']);
+  assert.equal(C.sortTilesByDistance(keys, { lat: 27.06, lon: -82.15 })[0], '108_-329'); // North Port
+  assert.equal(C.sortTilesByDistance(keys, { lat: 27.95, lon: -82.46 })[0], '111_-330'); // Tampa
+  assert.deepEqual(C.sortTilesByDistance(keys, null), keys);
+});
+test('places tiles: a place just across a tile edge is still the nearest match', () => {
+  const edgeLat = 27.5;
+  const me = { lat: edgeLat - 40 / 111320, lon: -82.55 };             // in tile 109_-331, 40 m south of the edge
+  const across = place('osm-x', 'Edge Diner', 'restaurant', { lat: edgeLat + 30 / 111320, lon: -82.55 }); // tile 110_-331, 70 m away
+  const farSameTile = place('osm-y', 'Far Gas', 'gas', { lat: edgeLat - 400 / 111320, lon: -82.55 });
+  const tiles = {
+    '109_-331': { v: 1, kinds: ['gas', 'restaurant'], places: [['osm-y', 'Far Gas', 0, farSameTile.la, farSameTile.lo, 0, 0]] },
+    '110_-331': { v: 1, kinds: ['gas', 'restaurant'], places: [['osm-x', 'Edge Diner', 1, across.la, across.lo, 'Diner Co', '1 Edge Rd, Bradenton']] },
+  };
+  assert.equal(C.placeTileKey(me.lat, me.lon), '109_-331');
+  assert.equal(C.placeTileKey(across.la, across.lo), '110_-331');
+  const keys = C.placeTilesAround(me, C.PLACE_RANGE_METERS + 150, new Set(Object.keys(tiles)));
+  const loaded = C.mergePlaces(...keys.map((k) => C.expandPlaceTile(tiles[k])));
+  const r = C.whereAmI(me, 10, [], loaded);
+  assert.deepEqual([r.type, r.storeID], ['one', 'osm-x']);
+  assert.deepEqual(C.expandPlaceTile(tiles['110_-331'])[0], { id: 'osm-x', n: 'Edge Diner', k: 'restaurant', la: across.la, lo: across.lo, b: 'Diner Co', a: '1 Edge Rd, Bradenton' });
+  // loading only the home tile would miss it — which is why neighbors are loaded
+  assert.equal(C.whereAmI(me, 10, [], C.expandPlaceTile(tiles['109_-331'])).type, 'none');
+  // merging drops duplicate ids
+  assert.equal(C.mergePlaces(loaded, loaded).length, loaded.length);
+});
+test('places: bundled tiles are well-formed and match the index', async () => {
   const fs = await import('node:fs');
-  const j = JSON.parse(fs.readFileSync(new URL('../places-bradenton.json', import.meta.url), 'utf8'));
-  assert.ok(j.places.length > 100);
+  const rd = (f) => JSON.parse(fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8'));
+  const idx = rd('places/index.json');
+  assert.ok(idx.total > 1000 && idx.tiles.length > 1);
   const ids = new Set();
-  for (const p of j.places) {
-    assert.ok(p.n && typeof p.la === 'number' && typeof p.lo === 'number' && C.PLACE_KINDS[p.k], JSON.stringify(p));
-    assert.ok(!ids.has(p.id)); ids.add(p.id);
+  let total = 0;
+  for (const t of idx.tiles) {
+    const ps = C.expandPlaceTile(rd(`places/t_${t.key}.json`));
+    assert.equal(ps.length, t.count, t.key);
+    for (const p of ps) {
+      assert.ok(p.n && typeof p.la === 'number' && typeof p.lo === 'number' && C.PLACE_KINDS[p.k], JSON.stringify(p));
+      assert.equal(C.placeTileKey(p.la, p.lo), t.key, `${p.n} in wrong tile`);
+      assert.ok(!ids.has(p.id), 'duplicate ' + p.id); ids.add(p.id);
+    }
+    total += ps.length;
   }
+  assert.equal(total, idx.total);
+  // legacy single file for older app versions is still there and well-formed
+  const legacy = rd('places-bradenton.json');
+  assert.ok(legacy.places.length > 100 && legacy.places.every((p) => C.PLACE_KINDS[p.k]));
 });

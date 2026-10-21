@@ -1,0 +1,124 @@
+{
+ "v": 1,
+ "source": "OpenStreetMap contributors via Overpass API (ODbL 1.0, https://www.openstreetmap.org/copyright)",
+ "generated": "2026-10-21T05:37:48.252Z",
+ "tileDeg": 0.25,
+ "box": {
+  "south": 26.98,
+  "west": -82.87,
+  "north": 28.2,
+  "east": -82.05
+ },
+ "region": "North Port to Tampa/Brandon (incl. St. Petersburg/Clearwater)",
+ "total": 6876,
+ "counts": {
+  "cafe": 379,
+  "convenience": 594,
+  "restaurant": 2067,
+  "pharmacy": 274,
+  "fastfood": 1403,
+  "gas": 753,
+  "electronics": 41,
+  "grocery": 463,
+  "hardware": 99,
+  "clothes": 365,
+  "department": 166,
+  "variety": 142,
+  "general": 14,
+  "warehouse": 24,
+  "ev": 52,
+  "mall": 40
+ },
+ "tiles": [
+  {
+   "key": "107_-329",
+   "count": 34,
+   "bytes": 3104
+  },
+  {
+   "key": "107_-330",
+   "count": 1,
+   "bytes": 278
+  },
+  {
+   "key": "108_-329",
+   "count": 178,
+   "bytes": 15184
+  },
+  {
+   "key": "108_-330",
+   "count": 204,
+   "bytes": 15896
+  },
+  {
+   "key": "108_-331",
+   "count": 4,
+   "bytes": 566
+  },
+  {
+   "key": "109_-330",
+   "count": 362,
+   "bytes": 30123
+  },
+  {
+   "key": "109_-331",
+   "count": 558,
+   "bytes": 46022
+  },
+  {
+   "key": "110_-330",
+   "count": 63,
+   "bytes": 5525
+  },
+  {
+   "key": "110_-331",
+   "count": 256,
+   "bytes": 21147
+  },
+  {
+   "key": "110_-332",
+   "count": 16,
+   "bytes": 1602
+  },
+  {
+   "key": "111_-329",
+   "count": 93,
+   "bytes": 8144
+  },
+  {
+   "key": "111_-330",
+   "count": 1127,
+   "bytes": 95636
+  },
+  {
+   "key": "111_-331",
+   "count": 1644,
+   "bytes": 144747
+  },
+  {
+   "key": "111_-332",
+   "count": 524,
+   "bytes": 44613
+  },
+  {
+   "key": "112_-329",
+   "count": 86,
+   "bytes": 6715
+  },
+  {
+   "key": "112_-330",
+   "count": 797,
+   "bytes": 64085
+  },
+  {
+   "key": "112_-331",
+   "count": 787,
+   "bytes": 63819
+  },
+  {
+   "key": "112_-332",
+   "count": 142,
+   "bytes": 11694
+  }
+ ]
+}

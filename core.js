@@ -573,6 +573,45 @@ export function placeKindInfo(kind) {
   return { ...k, looksLike: `Looks like ${article} ${k.label}` };
 }
 export const PLACE_RANGE_METERS = 150;
+// The directory is split into 0.25° × 0.25° grid tiles (places/t_<row>_<col>.json), loaded on demand.
+export const PLACE_TILE_DEG = 0.25;
+export const placeTileKey = (lat, lon) => `${Math.floor(lat / PLACE_TILE_DEG)}_${Math.floor(lon / PLACE_TILE_DEG)}`;
+/** Keys of every tile touched by a circle of `meters` around point (so places just across a tile edge are found). */
+export function placeTilesAround(point, meters, available = null) {
+  const dLat = meters / 111320;
+  const dLon = meters / (111320 * Math.max(Math.cos((point.lat * Math.PI) / 180), 0.01));
+  const r0 = Math.floor((point.lat - dLat) / PLACE_TILE_DEG), r1 = Math.floor((point.lat + dLat) / PLACE_TILE_DEG);
+  const c0 = Math.floor((point.lon - dLon) / PLACE_TILE_DEG), c1 = Math.floor((point.lon + dLon) / PLACE_TILE_DEG);
+  const keys = [];
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) keys.push(`${r}_${c}`);
+  return available ? keys.filter((k) => available.has(k)) : keys;
+}
+/** Tile keys ordered nearest-first from a point (by distance to each tile's center); unchanged order if no point. */
+export function sortTilesByDistance(keys, point) {
+  if (!point) return [...keys];
+  const d = (k) => {
+    const [r, c] = k.split('_').map(Number);
+    const la = (r + 0.5) * PLACE_TILE_DEG, lo = (c + 0.5) * PLACE_TILE_DEG;
+    return Math.hypot(la - point.lat, (lo - point.lon) * Math.cos((point.lat * Math.PI) / 180));
+  };
+  return [...keys].sort((a, b) => d(a) - d(b) || a.localeCompare(b));
+}
+/** Expand a compact tile file ({kinds, places: [[id, name, kindIndex, lat, lon, brand|0, addr|0]]}) to place objects. */
+export function expandPlaceTile(tile) {
+  const kinds = tile.kinds || [];
+  return (tile.places || []).map(([id, n, ki, la, lo, b, a]) => {
+    const p = { id, n, k: kinds[ki] || 'general', la, lo };
+    if (b) p.b = b;
+    if (a) p.a = a;
+    return p;
+  });
+}
+/** Merge place lists, dropping duplicate ids. */
+export function mergePlaces(...lists) {
+  const seen = new Set(), out = [];
+  for (const list of lists) for (const p of list) if (!seen.has(p.id)) { seen.add(p.id); out.push(p); }
+  return out;
+}
 /** Turn a directory place into a temporary store object the recommender understands. */
 export function placeToStore(p) {
   const info = placeKindInfo(p.k);

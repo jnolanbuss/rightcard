@@ -36,15 +36,51 @@ const ui = {
   temp: new Map(),       // directory places currently in play, as temporary store objects
   pos: null,             // last location from "Find where I am" (kept in memory only)
 };
-const PLACES_URL = 'places-bradenton.json';
-let placesPromise = null;
-function loadPlaces() {
-  if (!placesPromise) {
-    placesPromise = fetch(PLACES_URL).then((r) => (r.ok ? r.json() : { places: [] }))
-      .then((j) => { ui.places = Array.isArray(j.places) ? j.places : []; return ui.places; })
-      .catch(() => { ui.places = []; return ui.places; });
+// Places directory: places/index.json lists 0.25° grid tiles; tiles load on demand near your location
+// (or all of them when you search by name). Loaded tiles are kept in memory and cached by the service worker.
+const PLACES_DIR = 'places/';
+const tileCache = new Map(); // key -> Promise<place[]>
+let indexPromise = null;
+function loadPlaceIndex() {
+  if (!indexPromise) {
+    indexPromise = fetch(PLACES_DIR + 'index.json').then((r) => (r.ok ? r.json() : null))
+      .then((j) => (j && Array.isArray(j.tiles) ? new Set(j.tiles.map((t) => t.key)) : new Set()))
+      .catch(() => { indexPromise = null; return new Set(); });
   }
-  return placesPromise;
+  return indexPromise;
+}
+function loadTile(key) {
+  if (!tileCache.has(key)) {
+    tileCache.set(key, fetch(`${PLACES_DIR}t_${key}.json`).then((r) => (r.ok ? r.json() : { places: [] }))
+      .then((j) => C.expandPlaceTile(j))
+      .catch(() => { tileCache.delete(key); return []; }));
+  }
+  return tileCache.get(key);
+}
+async function loadTiles(keys) {
+  const lists = await Promise.all(keys.map(loadTile));
+  ui.places = C.mergePlaces(ui.places || [], ...lists);
+  return ui.places;
+}
+/** Tiles covering a circle around a point (handles places just across a tile edge). */
+async function loadPlacesNear(point, meters) {
+  const idx = await loadPlaceIndex();
+  return loadTiles(C.placeTilesAround(point, meters, idx));
+}
+/** Every tile (used by name search), nearest tiles first: the closest few load and show results, then the rest. */
+let allPromise = null;
+function loadPlaces(onFirst) {
+  if (!allPromise) {
+    allPromise = loadPlaceIndex().then(async (idx) => {
+      const keys = C.sortTilesByDistance([...idx], ui.pos);
+      await loadTiles(keys.slice(0, 4));
+      if (onFirst) onFirst();
+      const p = await loadTiles(keys.slice(4));
+      if (p.length) ui.placesAll = true; else allPromise = null;
+      return p;
+    });
+  }
+  return allPromise;
 }
 /** Saved stores plus any directory places in play, for screens that look stores up by id. */
 function view() {
@@ -161,22 +197,20 @@ function storeResultsHTML() {
   let h = res.length ? `<div class="list">${res.map((s) => `<button class="item" data-action="pick-store" data-id="${esc(s.id)}">
       <span class="ic" aria-hidden="true">${C.catIcon(C.effectiveCategory(s).category)}</span><span class="spacer">${esc(s.name)}</span><span class="chev" aria-hidden="true">›</span></button>`).join('')}</div>` : '';
   if (ui.search.trim().length >= 2) {
-    if (ui.places == null) {
-      loadPlaces().then(() => { const el = $('#store-results'); if (el) el.innerHTML = storeResultsHTML(); });
-      h += `<p class="muted small">Looking through nearby places…</p>`;
-    } else {
-      const saved = new Set(data.stores.map((s) => s.id));
-      const ps = C.searchPlaces(ui.search, ui.places, ui.pos, 20).filter((p) => !saved.has(p.id));
-      if (ps.length) {
-        h += `<h3 class="muted">Places in the Bradenton area${ui.pos ? ', nearest first' : ''}</h3><div class="list">${ps.map((p) => {
-          const info = C.placeKindInfo(p.k);
-          const sub = [info.looksLike, p.a, p.distance != null ? fmtDist(p.distance) : null].filter(Boolean).join(' · ');
-          return `<button class="item" data-action="pick-place" data-id="${esc(p.id)}"><span class="ic" aria-hidden="true">${C.catIcon(info.category)}</span>
-            <span class="spacer"><div>${esc(p.n)}</div><div class="sub">${esc(sub)}</div></span><span class="chev" aria-hidden="true">›</span></button>`;
-        }).join('')}</div>`;
-      }
-      if (!res.length && !ps.length) h += `<p class="muted">Nothing matches. Add it in Saved Stores, or tap a category.</p>`;
+    const loading = !ui.placesAll;
+    if (loading) { const rerender = () => { const el = $('#store-results'); if (el) el.innerHTML = storeResultsHTML(); }; loadPlaces(rerender).then(rerender); }
+    const saved = new Set(data.stores.map((s) => s.id));
+    const ps = C.searchPlaces(ui.search, ui.places || [], ui.pos, 20).filter((p) => !saved.has(p.id));
+    if (ps.length) {
+      h += `<h3 class="muted">Places from North Port to Tampa${ui.pos ? ', nearest first' : ''}</h3><div class="list">${ps.map((p) => {
+        const info = C.placeKindInfo(p.k);
+        const sub = [info.looksLike, p.a, p.distance != null ? fmtDist(p.distance) : null].filter(Boolean).join(' · ');
+        return `<button class="item" data-action="pick-place" data-id="${esc(p.id)}"><span class="ic" aria-hidden="true">${C.catIcon(info.category)}</span>
+          <span class="spacer"><div>${esc(p.n)}</div><div class="sub">${esc(sub)}</div></span><span class="chev" aria-hidden="true">›</span></button>`;
+      }).join('')}</div>`;
     }
+    if (loading) h += `<p class="muted small">Looking through more places…</p>`;
+    else if (!res.length && !ps.length) h += `<p class="muted">Nothing matches. Add it in Saved Stores, or tap a category.</p>`;
   } else if (!res.length) {
     h += `<p class="muted">No saved store matches. Add it in Saved Stores, or tap a category.</p>`;
   }
@@ -284,7 +318,7 @@ function viewSettings() {
 
   <fieldset><legend>Location</legend>
     <label class="field"><span>Check where I am when RightCard opens</span><input type="checkbox" data-setting="autoLocate" ${s.autoLocate !== false ? 'checked' : ''} aria-label="Check where I am when RightCard opens"></label>
-    <p class="hint">Your location is used only on this phone, only while RightCard is open, to look for a store within about 150 m (500 ft) in a list of Bradenton-area places built into the app. It is never sent or saved anywhere.</p>
+    <p class="hint">Your location is used only on this phone, only while RightCard is open, to look for a store within about 150 m (500 ft) in a list of places from North Port to Tampa built into the app. It is never sent or saved anywhere.</p>
   </fieldset>
 
   <fieldset><legend>Your data</legend>
@@ -666,10 +700,12 @@ function getPosition(quiet = false) {
 async function findNearby(opts = {}) {
   const quiet = !!opts.quiet;
   ui.locating = true; softRender();
-  const [pos] = await Promise.all([getPosition(quiet), loadPlaces()]);
-  ui.locating = false;
-  if (!pos) { softRender(); return; }
+  loadPlaceIndex(); // start in parallel with the location request
+  const pos = await getPosition(quiet);
+  if (!pos) { ui.locating = false; softRender(); return; }
   ui.pos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+  await loadPlacesNear(ui.pos, C.PLACE_RANGE_METERS + 100 + 50);
+  ui.locating = false;
   // If something else was chosen while we were waiting, don't jump away from it.
   if (quiet && (ui.selection.type !== 'none' || sheet)) { softRender(); return; }
   const d = C.whereAmI(ui.pos, pos.coords.accuracy, data.stores, ui.places || []);

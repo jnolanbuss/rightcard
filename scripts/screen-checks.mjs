@@ -197,8 +197,8 @@ const pageURL = base.origin + base.pathname;
   await c.setOffline(true);
   await p.goto(pageURL + '?store=Publix'); await p.waitForSelector('main h1');
   check('offline: ?store= link still opens (SW ignores query)', (await txt()).startsWith('Publix'));
-  const placesOffline = await p.evaluate(async () => (await (await fetch('places-bradenton.json')).json()).places.length);
-  check('offline: places directory precached', placesOffline > 100, String(placesOffline));
+  const placesOffline = await p.evaluate(async () => (await (await fetch('places/index.json')).json()).total);
+  check('offline: places index precached', placesOffline > 1000, String(placesOffline));
   await c.setOffline(false);
   await c.close();
 }
@@ -262,6 +262,23 @@ const pageURL = base.origin + base.pathname;
   check('location denied/not granted → manual picker still works', t.includes('Where are you shopping?') && t.includes('Or pick what you\'re buying'));
   await p.locator('#store-results [data-action=pick-store]:has-text("Publix")').click();
   check('manual pick works without location', (await txt()).startsWith('Publix'));
+  await c.close();
+}
+// ================= Corridor spot checks (real OSM places; tiles load on demand) =================
+for (const [city, name, lat, lon, tile] of [
+  ['North Port', 'Aldi', 27.065088, -82.156455, '108_-329'],
+  ['Venice', '7-Eleven', 27.115846, -82.383543, '108_-330'],
+  ['Tampa', 'CITGO', 27.955526, -82.437632, '111_-330'],
+  ['Brandon', 'Walmart', 27.940552, -82.264925, '111_-330'],
+]) {
+  const { c, p, txt } = await fresh({ geolocation: { latitude: lat, longitude: lon, accuracy: 10 } });
+  const tiles = [];
+  p.on('request', (r) => { const m = r.url().match(/places\/t_([-\d_]+)\.json/); if (m) tiles.push(m[1]); });
+  await p.goto(pageURL); await p.waitForSelector('main h1');
+  await p.waitForFunction((n) => document.querySelector('main h1').innerText.startsWith(n), name, { timeout: 15000 }).catch(() => {});
+  const t = await txt();
+  check(`${city}: on open → ${name} Best Card`, t.startsWith(name) && t.toLowerCase().includes('use this card'), t.slice(0, 80));
+  check(`${city}: loaded only nearby tile(s)`, tiles.includes(tile) && tiles.length <= 4, tiles.join(','));
   await c.close();
 }
 check('no JS errors', errors.length === 0, errors.join(' | '));
