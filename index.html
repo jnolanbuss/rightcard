@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RightCard</title>
+  <meta name="description" content="Which of our cards earns the most here? A household rewards helper for Nolan and Brittany.">
+  <meta name="theme-color" content="#1E8E5A" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f1512" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="RightCard">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand" aria-hidden="true">RightCard</div>
+    <div id="profile" class="segmented" role="radiogroup" aria-label="Who's shopping"></div>
+  </header>
+  <main id="main" tabindex="-1"></main>
+  <nav class="tabs" aria-label="Sections">
+    <button data-tab="best" aria-label="Best Card"><span class="ti" aria-hidden="true">★</span><span>Best Card</span></button>
+    <button data-tab="cards" aria-label="My Cards"><span class="ti" aria-hidden="true">💳</span><span>My Cards</span></button>
+    <button data-tab="stores" aria-label="Saved Stores"><span class="ti" aria-hidden="true">📍</span><span>Saved Stores</span></button>
+    <button data-tab="settings" aria-label="Settings"><span class="ti" aria-hidden="true">⚙︎</span><span>Settings</span></button>
+  </nav>
+  <dialog id="sheet" aria-modal="true"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <noscript>RightCard needs JavaScript turned on.</noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
