@@ -31,7 +31,36 @@ const ui = {
   storeSearch: '',
   geo: { available: 'geolocation' in navigator, permission: 'prompt' },
   locating: false,
+  notice: null,          // friendly message shown on Best Card (e.g. a store link didn't match)
+  places: null,          // bundled nearby-places directory, loaded lazily
+  temp: new Map(),       // directory places currently in play, as temporary store objects
+  pos: null,             // last location from "Find where I am" (kept in memory only)
 };
+const PLACES_URL = 'places-bradenton.json';
+let placesPromise = null;
+function loadPlaces() {
+  if (!placesPromise) {
+    placesPromise = fetch(PLACES_URL).then((r) => (r.ok ? r.json() : { places: [] }))
+      .then((j) => { ui.places = Array.isArray(j.places) ? j.places : []; return ui.places; })
+      .catch(() => { ui.places = []; return ui.places; });
+  }
+  return placesPromise;
+}
+/** Saved stores plus any directory places in play, for screens that look stores up by id. */
+function view() {
+  if (!ui.temp.size) return data;
+  const saved = new Set(data.stores.map((s) => s.id));
+  return { ...data, stores: [...data.stores, ...[...ui.temp.values()].filter((t) => !saved.has(t.id))] };
+}
+const isSaved = (id) => data.stores.some((s) => s.id === id);
+const placeLine = (s) => {
+  if (!s.isPlace) return '';
+  const bits = [C.placeKindInfo(s.placeKind).looksLike];
+  if (s.address) bits.push(s.address);
+  if (ui.pos && s.location) bits.push(fmtDist(C.distanceMeters(ui.pos, s.location)));
+  return bits.join(' · ');
+};
+const fmtDist = (m) => (m < 20 ? 'right here' : m < 1000 ? `${Math.round(m / 10) * 10} m away` : `${(m / 1609.34).toFixed(1)} mi away`);
 let sheet = null; // { kind, draft, isNew, error }
 
 function fixPerson() {
@@ -101,33 +130,57 @@ function render() {
 // ----- Best Card
 function viewBest() {
   const amount = parseAmount(ui.amountText);
-  const scr = C.bestCardScreen(data, ui.personID, ui.selection, amount, ui.geo, new Date());
+  const v = view();
+  const scr = C.bestCardScreen(v, ui.personID, ui.selection, amount, ui.geo, new Date());
   if (scr.recommendation) {
+    const st = ui.selection.type === 'store' ? v.stores.find((x) => x.id === ui.selection.storeID) : null;
     return `<div class="row"><h1>${esc(scr.title)}</h1><span class="spacer"></span>
         <button class="link" data-action="clear-selection" aria-label="Change store or category">Change</button></div>
+      ${st && st.isPlace && !isSaved(st.id) ? `<p class="muted small place-sub">${esc(placeLine(st))}</p>` : ''}
       <div class="amount"><label for="amount">Amount</label>
         <input id="amount" inputmode="decimal" placeholder="$0.00" autocomplete="off" value="${esc(ui.amountText)}" aria-label="Purchase amount in dollars (optional)"></div>
       <div id="result" aria-live="polite">${resultHTML(scr.recommendation, amount)}</div>`;
   }
   if (scr.storeChoices.length) {
-    return `<h1>${esc(scr.title)}</h1><p class="muted">Several saved stores are close together. Which one are you at?</p>
-      <div class="stack">${scr.storeChoices.map((s) => `<button class="btn" data-action="pick-store" data-id="${esc(s.id)}"><span aria-hidden="true">${C.catIcon(C.effectiveCategory(s).category)}</span>${esc(s.name)}</button>`).join('')}</div>
+    return `<h1>${esc(scr.title)}</h1>${ui.notice ? banner(ui.notice, 'info', 'ℹ️') : ''}<p class="muted">${ui.selection.reason === 'link' ? 'More than one saved store has that name.' : 'A few stores are close together.'} Which one are you at?</p>
+      <div class="stack">${scr.storeChoices.map((s) => `<button class="btn choice" data-action="pick-store" data-id="${esc(s.id)}"><span aria-hidden="true">${C.catIcon(C.effectiveCategory(s).category)}</span><span class="choice-text"><span>${esc(s.name)}</span>${s.isPlace && !isSaved(s.id) ? `<span class="sub">${esc(placeLine(s))}</span>` : ''}</span></button>`).join('')}</div>
       <button class="link" data-action="clear-selection">None of these</button>`;
   }
   return `<h1>Where are you shopping?</h1>
-    <input id="store-search" class="search" type="search" placeholder="Search your stores" aria-label="Search your saved stores" value="${esc(ui.search)}" autocomplete="off">
+    ${ui.notice ? banner(ui.notice, 'info', 'ℹ️') : ''}
+    <input id="store-search" class="search" type="search" placeholder="Search stores and places" aria-label="Search your saved stores and nearby places" value="${esc(ui.search)}" autocomplete="off">
     <div id="store-results" style="margin-top:10px">${storeResultsHTML()}</div>
     <h2>Or pick what you're buying</h2>
     ${catGrid('pick-category')}
-    <h2>Find nearby</h2>
-    ${scr.geo.canFindNearby ? `<button class="btn plain" data-action="find-nearby" ${ui.locating ? 'disabled' : ''}>${ui.locating ? 'Checking your location…' : '📍 Find nearby saved store'}</button>` : ''}
+    <h2>Where am I?</h2>
+    ${scr.geo.canFindNearby ? `<button class="btn plain" data-action="find-nearby" ${ui.locating ? 'disabled' : ''}>${ui.locating ? 'Checking your location…' : '📍 Find where I am'}</button>` : ''}
     ${banner(esc(scr.geo.message), scr.geo.canFindNearby ? 'info' : 'warn', scr.geo.canFindNearby ? 'ℹ️' : '🚫')}`;
 }
 function storeResultsHTML() {
   const res = C.searchStores(ui.search, data.stores).slice(0, ui.search ? 30 : 12);
-  if (!res.length) return `<p class="muted">No saved store matches. Add it in Saved Stores, or tap a category.</p>`;
-  return `<div class="list">${res.map((s) => `<button class="item" data-action="pick-store" data-id="${esc(s.id)}">
-      <span class="ic" aria-hidden="true">${C.catIcon(C.effectiveCategory(s).category)}</span><span class="spacer">${esc(s.name)}</span><span class="chev" aria-hidden="true">›</span></button>`).join('')}</div>`;
+  let h = res.length ? `<div class="list">${res.map((s) => `<button class="item" data-action="pick-store" data-id="${esc(s.id)}">
+      <span class="ic" aria-hidden="true">${C.catIcon(C.effectiveCategory(s).category)}</span><span class="spacer">${esc(s.name)}</span><span class="chev" aria-hidden="true">›</span></button>`).join('')}</div>` : '';
+  if (ui.search.trim().length >= 2) {
+    if (ui.places == null) {
+      loadPlaces().then(() => { const el = $('#store-results'); if (el) el.innerHTML = storeResultsHTML(); });
+      h += `<p class="muted small">Looking through nearby places…</p>`;
+    } else {
+      const saved = new Set(data.stores.map((s) => s.id));
+      const ps = C.searchPlaces(ui.search, ui.places, ui.pos, 20).filter((p) => !saved.has(p.id));
+      if (ps.length) {
+        h += `<h3 class="muted">Places in the Bradenton area${ui.pos ? ', nearest first' : ''}</h3><div class="list">${ps.map((p) => {
+          const info = C.placeKindInfo(p.k);
+          const sub = [info.looksLike, p.a, p.distance != null ? fmtDist(p.distance) : null].filter(Boolean).join(' · ');
+          return `<button class="item" data-action="pick-place" data-id="${esc(p.id)}"><span class="ic" aria-hidden="true">${C.catIcon(info.category)}</span>
+            <span class="spacer"><div>${esc(p.n)}</div><div class="sub">${esc(sub)}</div></span><span class="chev" aria-hidden="true">›</span></button>`;
+        }).join('')}</div>`;
+      }
+      if (!res.length && !ps.length) h += `<p class="muted">Nothing matches. Add it in Saved Stores, or tap a category.</p>`;
+    }
+  } else if (!res.length) {
+    h += `<p class="muted">No saved store matches. Add it in Saved Stores, or tap a category.</p>`;
+  }
+  return h;
 }
 function resultHTML(rec, amount) {
   const best = rec.best;
@@ -146,8 +199,11 @@ function resultHTML(rec, amount) {
     h += `<h3 class="muted">Next best</h3><div class="next">${cardFace(n, true)}<div><div style="font-weight:750;font-size:20px">${esc(n.headlineRate)}</div>
       ${amount != null && n.netValue != null ? `<div class="muted">${C.money(n.netValue)}</div>` : ''}</div></div>`;
   }
-  if (ui.selection.type === 'store') {
+  if (ui.selection.type === 'store' && isSaved(ui.selection.storeID)) {
     h += `<div style="margin-top:16px"><button class="btn plain" data-action="open-confirm">✔︎ How did this show up on your statement?</button></div>`;
+  } else if (ui.selection.type === 'store') {
+    h += `<div style="margin-top:16px"><button class="btn plain" data-action="save-place">＋ Save to my stores</button>
+      <p class="hint">Saving it lets you record how it shows up on your statement, and make a Shortcut link for it.</p></div>`;
   }
   if (amount != null && best.bonusRemaining != null) {
     h += `<div style="margin-top:10px"><button class="btn" data-action="log-purchase">＋ I paid ${C.money(amount)} with ${esc(best.cardName)}</button>
@@ -184,7 +240,8 @@ function viewStores() {
     <input id="stores-search" class="search" type="search" placeholder="Search stores" aria-label="Search stores" value="${esc(ui.storeSearch)}">
     <div id="stores-list" style="margin-top:10px">${storesListHTML(list)}</div>
     ${banner('Store categories are guesses until you confirm them. A store’s name doesn’t prove how the card company will code the purchase.', 'info', '❓')}
-    ${banner('Locations are optional and only used by “Find nearby” while the site is open. The website can’t alert you when you arrive.', 'info', '📍')}`;
+    ${banner('Want a reminder when you get to a store? Tap “Copy Shortcut link” and paste it into an iPhone Shortcut. Steps are in Settings → Arrival notifications.', 'info', '🔔')}
+    ${banner('Locations are optional. They help “Find where I am” while the app is open.', 'info', '📍')}`;
   return h;
 }
 function storesListHTML(list) {
@@ -192,10 +249,11 @@ function storesListHTML(list) {
   return `<div class="list">${list.map((s) => {
     const eff = C.effectiveCategory(s);
     const conf = eff.confidence.type === 'confirmed' ? '✔︎ confirmed' : eff.confidence.type === 'mixed' ? 'mixed history' : 'guess, unconfirmed';
-    return `<button class="item" data-action="edit-store" data-id="${esc(s.id)}" aria-label="Edit ${esc(s.name)}">
+    return `<div class="store-row"><button class="item" data-action="edit-store" data-id="${esc(s.id)}" aria-label="Edit ${esc(s.name)}">
       <span class="ic" aria-hidden="true">${C.catIcon(eff.category)}</span>
       <span class="spacer"><div style="font-weight:650">${esc(s.name)}</div><div class="sub">${esc(C.catName(eff.category))} · ${conf}</div>
-      <div class="sub">${s.location ? 'Location saved' : 'No location'}</div></span><span class="chev" aria-hidden="true">›</span></button>`;
+      <div class="sub">${s.location ? 'Location saved' : 'No location'}</div></span><span class="chev" aria-hidden="true">›</span></button>
+      <button class="copy-link" data-action="copy-link" data-id="${esc(s.id)}" aria-label="Copy Shortcut link for ${esc(s.name)}"><span aria-hidden="true">🔗</span> Copy Shortcut link</button></div>`;
   }).join('')}</div>`;
 }
 
@@ -213,7 +271,20 @@ function viewSettings() {
   </fieldset>
 
   <fieldset><legend>Arrival notifications</legend>
-    ${banner('<b>Not available on the website.</b> iPhone web apps can’t watch your location in the background, so RightCard on the web can’t notify you when you arrive at a store. That needs the native iPhone app (built with Xcode on a Mac). Use the store search, the category buttons, or “Find nearby” while the app is open.', 'warn', '🔕')}
+    ${banner('The website by itself can’t watch your location in the background, so it can’t alert you on its own. The free <b>Shortcuts</b> app on your iPhone can do it for you.', 'info', '🔔')}
+    <ol class="steps small">
+      <li>In <b>Saved Stores</b>, tap <b>Copy Shortcut link</b> under the store.</li>
+      <li>Open <b>Shortcuts</b> → <b>Automation</b> → <b>+</b> (New Automation) → <b>Arrive</b>.</li>
+      <li>Choose the store’s location, pick <b>Run Immediately</b>, and tap <b>Next</b>.</li>
+      <li>Add <b>Show Notification</b> (for example “Open RightCard”), then add <b>Open URLs</b> and paste the link.</li>
+      <li>Tap <b>Done</b>. When you get there, the link opens RightCard in Safari right to that store’s best card.</li>
+    </ol>
+    <p class="hint">Links open in Safari. Safari keeps its own copy of RightCard’s data, separate from the Home Screen app, so set up your cards in Safari too (or use Export / Import below).</p>
+  </fieldset>
+
+  <fieldset><legend>Location</legend>
+    <label class="field"><span>Check where I am when RightCard opens</span><input type="checkbox" data-setting="autoLocate" ${s.autoLocate !== false ? 'checked' : ''} aria-label="Check where I am when RightCard opens"></label>
+    <p class="hint">Your location is used only on this phone, only while RightCard is open, to look for a store within about 150 m (500 ft) in a list of Bradenton-area places built into the app. It is never sent or saved anywhere.</p>
   </fieldset>
 
   <fieldset><legend>Your data</legend>
@@ -234,6 +305,7 @@ function viewSettings() {
     <p class="small">RightCard suggests a card. You pay by choosing that card yourself in Apple Wallet. It can't switch Wallet cards or make payments.</p>
     <p class="small">How a purchase is categorized is decided by the card company and the store's payment setup, not the store's name. Estimates may be wrong.</p>
     <p class="small">Demo cards are fictional. RightCard doesn't include any real card's terms.</p>
+    <p class="small">Nearby places © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. A place’s type (like “gas station”) is only a hint. Card companies decide how a store is classified.</p>
   </fieldset>`;
 }
 
@@ -453,13 +525,25 @@ const toggleIn = (arr, v) => (arr.includes(v) ? arr.filter((x) => x !== v) : [..
 const actions = {
   person: (el) => { ui.personID = el.dataset.id; localStorage.setItem(PKEY, ui.personID); render(); },
   tab: (el) => { ui.tab = el.dataset.tab; render(); $('#main').focus(); window.scrollTo(0, 0); },
-  'pick-store': (el) => {
-    ui.selection = { type: 'store', storeID: el.dataset.id };
-    data.stores.find((s) => s.id === el.dataset.id).lastVisited = new Date().toISOString();
-    save(); render(); window.scrollTo(0, 0);
+  'pick-store': (el) => selectStore(el.dataset.id),
+  'pick-place': (el) => {
+    const p = (ui.places || []).find((x) => x.id === el.dataset.id);
+    if (!p) return;
+    const saved = C.savedMatchForPlace(p, data.stores);
+    if (saved) return selectStore(saved.id);
+    ui.temp.set(p.id, C.placeToStore(p));
+    selectStore(p.id);
   },
-  'pick-category': (el) => { ui.selection = { type: 'category', category: el.dataset.cat }; render(); window.scrollTo(0, 0); },
-  'clear-selection': () => { ui.selection = { type: 'none' }; ui.amountText = ''; render(); },
+  'save-place': () => {
+    const t = ui.temp.get(ui.selection.storeID);
+    if (!t) return;
+    const { isPlace, brand, address, ...rest } = t;
+    data = C.upsertStore(data, { ...rest, note: address ? `From map data: ${address}` : null, lastVisited: new Date().toISOString() });
+    save(); render(); toast(`Saved ${t.name} to your stores.`);
+  },
+  'copy-link': (el) => copyLink(el.dataset.id),
+  'pick-category': (el) => { ui.selection = { type: 'category', category: el.dataset.cat }; ui.notice = null; render(); window.scrollTo(0, 0); },
+  'clear-selection': () => { ui.selection = { type: 'none' }; ui.amountText = ''; ui.notice = null; render(); },
   'find-nearby': findNearby,
   'open-confirm': () => openSheet({ kind: 'confirm' }),
   'confirm-cat': (el) => {
@@ -469,7 +553,7 @@ const actions = {
   },
   'log-purchase': () => {
     const amount = parseAmount(ui.amountText);
-    const scr = C.bestCardScreen(data, ui.personID, ui.selection, amount, ui.geo);
+    const scr = C.bestCardScreen(view(), ui.personID, ui.selection, amount, ui.geo);
     const best = scr.recommendation && scr.recommendation.best;
     if (!best || amount == null) return;
     data = C.logPurchase(data, best.cardID, ui.personID, scr.recommendation.category, amount, new Date());
@@ -566,33 +650,87 @@ const actions = {
 };
 
 // ---------------- Geolocation (foreground, on tap only) ----------------
-function getPosition() {
-  if (!('geolocation' in navigator)) { toast("This browser can't share location."); return Promise.resolve(null); }
+function getPosition(quiet = false) {
+  if (!('geolocation' in navigator)) { if (!quiet) toast("This browser can't share location."); return Promise.resolve(null); }
   return new Promise((resolve) => {
     navigator.geolocation.getCurrentPosition(
       (pos) => { ui.geo.permission = 'granted'; resolve(pos); },
       (err) => {
-        if (err.code === 1) { ui.geo.permission = 'denied'; toast('Location is blocked for this site. Turn it on in iPhone Settings → Privacy & Security → Location Services → Safari Websites, or pick a store below.'); }
-        else toast("Couldn't get your location. Pick a store or category instead.");
+        if (err.code === 1) { ui.geo.permission = 'denied'; if (!quiet) toast('Location is blocked for this site. Turn it on in iPhone Settings → Privacy & Security → Location Services → Safari Websites, or pick a store below.'); }
+        else if (!quiet) toast("Couldn't get your location. Pick a store or category instead.");
         resolve(null);
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
   });
 }
-async function findNearby() {
-  if (!data.stores.some((s) => s.location)) {
-    toast('None of your saved stores has a location yet. Add one in Saved Stores.');
-    return;
-  }
-  ui.locating = true; render();
-  const pos = await getPosition();
+async function findNearby(opts = {}) {
+  const quiet = !!opts.quiet;
+  ui.locating = true; softRender();
+  const [pos] = await Promise.all([getPosition(quiet), loadPlaces()]);
   ui.locating = false;
-  if (!pos) { render(); return; }
-  const d = C.nearbyDecision({ lat: pos.coords.latitude, lon: pos.coords.longitude }, pos.coords.accuracy, data.stores);
-  if (d.type === 'none') toast('No saved store nearby. Search below or tap a category.');
-  else if (d.type === 'one') ui.selection = { type: 'store', storeID: d.storeID };
+  if (!pos) { softRender(); return; }
+  ui.pos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+  // If something else was chosen while we were waiting, don't jump away from it.
+  if (quiet && (ui.selection.type !== 'none' || sheet)) { softRender(); return; }
+  const d = C.whereAmI(ui.pos, pos.coords.accuracy, data.stores, ui.places || []);
+  for (const t of d.stores) ui.temp.set(t.id, t);
+  ui.notice = null;
+  if (d.type === 'none') { if (!quiet) toast('No store found right here. Search below or tap a category.'); softRender(); return; }
+  else if (d.type === 'one') { selectStore(d.storeID); return; }
   else ui.selection = { type: 'choose', storeIDs: d.storeIDs };
   render();
+}
+// Re-render without yanking the keyboard away from someone typing in a search box.
+function softRender() {
+  const a = document.activeElement;
+  if (sheet || (a && a.tagName === 'INPUT' && $('#main').contains(a))) {
+    const b = $('[data-action=find-nearby]');
+    if (b) { b.disabled = ui.locating; b.textContent = ui.locating ? 'Checking your location…' : '📍 Find where I am'; }
+    return;
+  }
+  render();
+}
+function selectStore(id) {
+  ui.selection = { type: 'store', storeID: id };
+  ui.notice = null;
+  const s = data.stores.find((x) => x.id === id);
+  if (s) { s.lastVisited = new Date().toISOString(); save(); }
+  ui.tab = 'best';
+  render(); window.scrollTo(0, 0);
+}
+async function copyLink(id) {
+  const s = data.stores.find((x) => x.id === id);
+  if (!s) return;
+  const url = C.storeLink(location.href, s, data.stores);
+  try {
+    await navigator.clipboard.writeText(url);
+    toast(`Link copied for ${s.name}. Paste it into your Shortcut.`);
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = url; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    if (ok) toast(`Link copied for ${s.name}. Paste it into your Shortcut.`);
+    else window.prompt('Copy this link:', url);
+  }
+}
+// ?store=<id or name> opens straight to that store's best card (used by iPhone Shortcuts).
+function applyStoreLink() {
+  const raw = C.storeParamFromSearch(location.search);
+  if (raw == null) return false;
+  history.replaceState(null, '', location.pathname + location.hash); // keep the address clean
+  const r = C.resolveStoreParam(raw, data.stores);
+  ui.tab = 'best';
+  if (r.type === 'store') { selectStore(r.storeID); return true; }
+  if (r.type === 'choose') { ui.selection = { type: 'choose', storeIDs: r.storeIDs, reason: 'link' }; return true; }
+  ui.selection = { type: 'none' };
+  ui.notice = r.query
+    ? `We couldn’t find a saved store called “${esc(r.query)}”. Pick your store below, or add it in Saved Stores.`
+    : 'That link didn’t include a store. Pick your store below.';
+  ui.search = r.query || '';
+  return true;
 }
 
 // ---------------- Export / import ----------------
@@ -630,7 +768,7 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('input', (e) => {
   const el = e.target;
-  if (el.id === 'amount') { ui.amountText = el.value; const scr = C.bestCardScreen(data, ui.personID, ui.selection, parseAmount(el.value), ui.geo); if (scr.recommendation) $('#result').innerHTML = resultHTML(scr.recommendation, parseAmount(el.value)); return; }
+  if (el.id === 'amount') { ui.amountText = el.value; const scr = C.bestCardScreen(view(), ui.personID, ui.selection, parseAmount(el.value), ui.geo); if (scr.recommendation) $('#result').innerHTML = resultHTML(scr.recommendation, parseAmount(el.value)); return; }
   if (el.id === 'store-search') { ui.search = el.value; $('#store-results').innerHTML = storeResultsHTML(); return; }
   if (el.id === 'stores-search') { ui.storeSearch = el.value; $('#stores-list').innerHTML = storesListHTML(C.searchStores(ui.storeSearch, data.stores)); return; }
   if (dlg().contains(el)) onSheetInput(e);
@@ -638,6 +776,7 @@ document.addEventListener('input', (e) => {
 document.addEventListener('change', (e) => {
   const el = e.target;
   if (el.id === 'import-file' && el.files[0]) { importFile(el.files[0]); el.value = ''; return; }
+  if (el.dataset.setting === 'autoLocate') { data.settings.autoLocate = el.checked; save(); return; }
   if (el.dataset.setting === 'owner') { data.settings.deviceOwnerID = el.value || null; save(); return; }
   if (el.dataset.setting === 'name') {
     const p = data.people.find((x) => x.id === el.dataset.id);
@@ -660,4 +799,14 @@ if ('serviceWorker' in navigator) {
 }
 if (!localStorage.getItem(PKEY) && data.settings.deviceOwnerID) ui.personID = data.settings.deviceOwnerID;
 save();
+const fromLink = applyStoreLink();
 render();
+// Check where we are on open (foreground only, never in the background). Skipped when opened from a store link.
+if (!fromLink && data.settings.autoLocate !== false && 'geolocation' in navigator) {
+  const go = () => findNearby({ quiet: true });
+  if (navigator.permissions && navigator.permissions.query) {
+    navigator.permissions.query({ name: 'geolocation' }).then((st) => { if (st.state !== 'denied') go(); }).catch(go);
+  } else go();
+}
+// iOS may reuse an already-open page: handle a store link arriving via back/forward cache too.
+window.addEventListener('pageshow', (e) => { if (e.persisted && applyStoreLink()) render(); });

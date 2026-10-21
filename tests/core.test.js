@@ -386,3 +386,138 @@ test('mutations never modify the input object', () => {
   C.confirmCategory(d, d.stores[0].id, 'other', null, oct20);
   assert.equal(JSON.stringify(d), snap);
 });
+
+// ---- Store links (?store=) for iPhone Shortcuts
+const linkStores = () => [
+  { ...store('Publix', 'groceries'), id: 'store-publix' },
+  { ...store("Detwiler's Farm Market", 'groceries'), id: 'store-detwilers' },
+  { ...store('Tom & Jerry Diner', 'restaurants'), id: 'store-tj' },
+  { ...store('Costco', 'groceries'), id: 'store-costco-a' },
+  { ...store('costco', 'groceries'), id: 'store-costco-b' },
+];
+const fromURL = (url) => C.resolveStoreParam(C.storeParamFromSearch(new URL(url).search), linkStores());
+
+test('store link: matches by id', () => {
+  assert.deepEqual(C.resolveStoreParam('store-publix', linkStores()), { type: 'store', storeID: 'store-publix' });
+  assert.deepEqual(fromURL('https://x.test/rightcard/?store=store-tj'), { type: 'store', storeID: 'store-tj' });
+});
+test('store link: matches name ignoring case and extra spaces', () => {
+  for (const q of ['publix', 'PUBLIX', '  Publix ', 'pUbLiX']) assert.deepEqual(C.resolveStoreParam(q, linkStores()), { type: 'store', storeID: 'store-publix' }, q);
+  assert.deepEqual(C.resolveStoreParam('detwilers farm market', linkStores()), { type: 'store', storeID: 'store-detwilers' }); // punctuation-insensitive
+});
+test('store link: URL-encoded names with spaces, &, apostrophes, and +', () => {
+  assert.deepEqual(fromURL('https://x.test/rightcard/?store=Tom%20%26%20Jerry%20Diner'), { type: 'store', storeID: 'store-tj' });
+  assert.deepEqual(fromURL('https://x.test/rightcard/?store=tom+%26+jerry+diner'), { type: 'store', storeID: 'store-tj' });
+  assert.deepEqual(fromURL("https://x.test/rightcard/?store=Detwiler's%20Farm%20Market"), { type: 'store', storeID: 'store-detwilers' });
+  assert.deepEqual(fromURL('https://x.test/rightcard/?store=Detwiler%27s%20Farm%20Market&x=1'), { type: 'store', storeID: 'store-detwilers' });
+  // a value that is still encoded (double-encoded by an app) is decoded once more
+  assert.deepEqual(C.resolveStoreParam('Tom%20%26%20Jerry%20Diner', linkStores()), { type: 'store', storeID: 'store-tj' });
+});
+test('store link: no match never returns a store (no partial guesses)', () => {
+  for (const q of ['Pub', 'Publix Pharmacy', 'Whole Foods', 'Tom', '%%%', '']) {
+    assert.equal(C.resolveStoreParam(q, linkStores()).type, 'none', q);
+  }
+  assert.equal(fromURL('https://x.test/rightcard/?store=Trader%20Joe%27s').query, "Trader Joe's");
+  assert.equal(C.storeParamFromSearch('?foo=1'), null);
+  assert.equal(C.resolveStoreParam(null, linkStores()).type, 'none');
+  assert.equal(C.resolveStoreParam('Publix', []).type, 'none');
+});
+test('store link: duplicate names ask which store (existing ambiguous prompt)', () => {
+  assert.deepEqual(C.resolveStoreParam('COSTCO', linkStores()), { type: 'choose', storeIDs: ['store-costco-a', 'store-costco-b'] });
+  const scr = C.bestCardScreen(H([flat2()], linkStores()), nolan, C.resolveStoreParam('costco', linkStores()), null);
+  assert.equal(scr.storeChoices.length, 2);
+  assert.equal(scr.recommendation, null);
+});
+test('store link: starter store names from demo data open the Best Card result', () => {
+  const d = C.demoHousehold(oct20);
+  const sel = C.resolveStoreParam('tesla supercharger', d.stores);
+  assert.deepEqual(sel, { type: 'store', storeID: 'store-tesla' });
+  const scr = C.bestCardScreen(d, nolan, sel, null, undefined, oct20);
+  assert.equal(scr.title, 'Tesla Supercharger');
+  assert.ok(scr.recommendation && scr.recommendation.best);
+});
+test('store link: building links keeps the GitHub Pages sub-path and round-trips', () => {
+  const all = linkStores();
+  const page = 'https://jnolanbuss.github.io/rightcard/?store=old#x';
+  const tj = C.storeLink(page, all[2], all);
+  assert.equal(tj, 'https://jnolanbuss.github.io/rightcard/?store=Tom%20%26%20Jerry%20Diner');
+  assert.equal(C.storeLink('https://jnolanbuss.github.io/rightcard/index.html', all[1], all), "https://jnolanbuss.github.io/rightcard/index.html?store=Detwiler's%20Farm%20Market");
+  // duplicate names fall back to the id so the link is never ambiguous
+  assert.equal(C.storeLink(page, all[3], all), 'https://jnolanbuss.github.io/rightcard/?store=store-costco-a');
+  for (const s of all) assert.deepEqual(fromURL(C.storeLink(page, s, all)), { type: 'store', storeID: s.id }, s.name);
+});
+
+// ---- Nearby places directory
+const home = { lat: 27.4700, lon: -82.5300 };
+const mv = (m, dir = 'n') => (dir === 'n' ? { lat: home.lat + m / 111320, lon: home.lon } : { lat: home.lat, lon: home.lon + m / (111320 * Math.cos(home.lat * Math.PI / 180)) });
+const place = (id, n, k, at, extra = {}) => ({ id, n, k, la: at.lat, lo: at.lon, ...extra });
+const dir = () => [
+  place('osm-n1', 'Sunshine Fuel', 'gas', mv(40)),
+  place('osm-n2', 'Corner Cafe', 'cafe', mv(120, 'e')),
+  place('osm-n3', 'Far Market', 'grocery', mv(900)),
+  place('osm-n4', 'Publix', 'grocery', mv(400, 'e'), { a: '1 Main St, Bradenton' }),
+];
+
+test('places: nearest single match within ~150 m', () => {
+  const r = C.whereAmI(mv(30), 10, [], dir().filter((p) => p.id !== 'osm-n2'));
+  assert.equal(r.type, 'one');
+  assert.equal(r.storeID, 'osm-n1');
+  assert.equal(r.stores[0].suggestedCategory, 'gas');
+  assert.equal(r.stores[0].name, 'Sunshine Fuel');
+});
+test('places: several within range → ask, nearest first', () => {
+  const r = C.whereAmI(home, 10, [], dir());
+  assert.equal(r.type, 'ask');
+  assert.deepEqual(r.storeIDs, ['osm-n1', 'osm-n2']);
+  const scr = C.bestCardScreen({ ...H([flat2()], r.stores) }, nolan, { type: 'choose', storeIDs: r.storeIDs }, null);
+  assert.deepEqual(scr.storeChoices.map((s) => s.name), ['Sunshine Fuel', 'Corner Cafe']);
+});
+test('places: none in range', () => {
+  assert.equal(C.whereAmI(mv(2000), 10, [], dir()).type, 'none');
+  assert.equal(C.whereAmI(home, 10, [], []).type, 'none');
+  // poor GPS accuracy only widens the range a little (capped at +100 m)
+  assert.equal(C.whereAmI(mv(700, 'e'), 5000, [], dir()).type, 'none');
+});
+test('places: saved store at the spot (and its confirmed category) wins over the directory', () => {
+  const saved = { ...store('Publix', 'groceries'), id: 'store-publix', confirmations: [{ id: 'c1', date: oct20.toISOString(), category: 'other', cardID: null }] };
+  const r = C.whereAmI(mv(400, 'e'), 10, [saved], dir());
+  assert.deepEqual([r.type, r.storeID, r.stores.length], ['one', 'store-publix', 0]);
+  const rec = C.recommendForStore(H([grocery(), flat2()], [saved]), nolan, saved, null, oct20);
+  assert.equal(rec.category, 'other'); // confirmed from past purchases, not the map guess
+  // a saved store with its own location is found too, merged with directory hits
+  const mine = { ...store('My Gym', 'other', mv(60, 'e')), id: 'my-gym' };
+  const r2 = C.whereAmI(home, 10, [mine], dir());
+  assert.equal(r2.type, 'ask');
+  assert.deepEqual(r2.storeIDs, ['osm-n1', 'my-gym', 'osm-n2']);
+});
+test('places: category mapping is a plain-language likely category', () => {
+  const m = (k) => C.placeKindInfo(k);
+  assert.deepEqual([m('gas').category, m('gas').looksLike], ['gas', 'Looks like a gas station']);
+  assert.equal(m('ev').category, 'evCharging');
+  assert.equal(m('ev').looksLike, 'Looks like an EV charger');
+  assert.equal(m('grocery').category, 'groceries');
+  for (const k of ['restaurant', 'fastfood', 'cafe']) assert.equal(m(k).category, 'restaurants', k);
+  for (const k of ['convenience', 'warehouse', 'department', 'variety', 'mall', 'general', 'clothes', 'electronics', 'hardware', 'pharmacy']) assert.equal(m(k).category, 'other', k);
+  assert.equal(m('unknown-kind').category, 'other');
+  const st = C.placeToStore(dir()[0]);
+  const rec = C.recommendForStore(H([flat2()], [st]), nolan, st, null, oct20);
+  assert.match(rec.categoryNote, /^Looks like a gas station, so we're using Gas\./);
+  assert.match(rec.categoryNote, /Card companies decide how a store is classified/);
+});
+test('places: search by name or brand, nearest first when location is known', () => {
+  const ps = [place('a', 'Publix', 'grocery', mv(3000)), place('b', 'Publix', 'grocery', mv(500)), place('c', 'Speedway 123', 'gas', mv(100), { b: 'Speedway' }), place('d', 'Publix Pharmacy', 'pharmacy', mv(800))];
+  assert.deepEqual(C.searchPlaces('publix', ps, home).map((p) => p.id), ['b', 'd', 'a']);
+  assert.ok(C.searchPlaces('publix', ps, home)[0].distance < 600);
+  assert.deepEqual(C.searchPlaces('speedway', ps).map((p) => p.id), ['c']);
+  assert.deepEqual(C.searchPlaces('p', ps), []); // too short
+});
+test('places: bundled directory file is well-formed', async () => {
+  const fs = await import('node:fs');
+  const j = JSON.parse(fs.readFileSync(new URL('../places-bradenton.json', import.meta.url), 'utf8'));
+  assert.ok(j.places.length > 100);
+  const ids = new Set();
+  for (const p of j.places) {
+    assert.ok(p.n && typeof p.la === 'number' && typeof p.lo === 'number' && C.PLACE_KINDS[p.k], JSON.stringify(p));
+    assert.ok(!ids.has(p.id)); ids.add(p.id);
+  }
+});

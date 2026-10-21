@@ -154,3 +154,25 @@ input, select { min-width: 0; }
 .amount input { width: 100%; }
 h1, .spacer { min-width: 0; overflow-wrap: anywhere; }
 html, body { overflow-x: hidden; }
+
+/* Saved Stores rows with a "Copy Shortcut link" button */
+.list > .store-row { border-top: 1px solid var(--border); }
+.list > .store-row:first-child { border-top: 0; }
+.store-row > .item {
+  display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; padding: 10px 14px 4px; border: 0;
+  background: none; text-align: left; cursor: pointer; color: var(--text);
+}
+.copy-link {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin: 0 14px 10px 58px; padding: 8px 14px;
+  border: 1.5px solid var(--border); border-radius: 999px; background: var(--surface2); color: var(--text); font-weight: 650; font-size: 15px; cursor: pointer;
+}
+.copy-link:active { background: var(--accent-soft); }
+.copy-link:focus-visible, .store-row > .item:focus-visible { outline: 3px solid var(--info); outline-offset: 2px; }
+/* Pick-list choices with a second line */
+.btn.choice { justify-content: flex-start; text-align: left; }
+.choice-text { display: flex; flex-direction: column; }
+.choice-text .sub, .place-sub { font-size: 14px; font-weight: 500; color: var(--muted); }
+.place-sub { margin: -6px 0 8px; }
+.steps { margin: 8px 0; padding-left: 22px; }
+.steps li { margin: 6px 0; }
+a { color: var(--info); }

@@ -125,6 +125,52 @@ export function searchStores(query, stores) {
     });
 }
 
+// ---------- Store links (?store=...) for iPhone Shortcuts ----------
+// Read the store value from a URL query string. URLSearchParams decodes %XX and '+'.
+export function storeParamFromSearch(search) {
+  try {
+    const v = new URLSearchParams(search || '').get('store');
+    return v == null ? null : v;
+  } catch { return null; }
+}
+// Turn a ?store= value into a Best Card selection. Never guesses: only an exact id,
+// an exact name (ignoring case/extra spaces), or the same name ignoring punctuation.
+// Starter stores are ordinary saved stores (isStarter), so their names match too.
+// Returns { type: 'store', storeID } | { type: 'choose', storeIDs } | { type: 'none', query }.
+export function resolveStoreParam(raw, stores) {
+  const first = String(raw ?? '').trim();
+  if (!first) return { type: 'none', query: '' };
+  const tries = [first];
+  // If the value still looks percent-encoded (e.g. pasted twice-encoded), also try it decoded.
+  if (/%[0-9a-f]{2}/i.test(first)) { try { tries.push(decodeURIComponent(first.replace(/\+/g, ' ')).trim()); } catch { /* ignore */ } }
+  for (const q of tries) {
+    const r = matchStore(q, stores);
+    if (r) return r;
+  }
+  return { type: 'none', query: tries.at(-1) };
+}
+const foldName = (x) => String(x || '').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+function matchStore(q, stores) {
+  if (!q) return null;
+  const byID = stores.find((s) => s.id === q);
+  if (byID) return { type: 'store', storeID: byID.id };
+  const pick = (list) => (list.length === 1 ? { type: 'store', storeID: list[0].id } : { type: 'choose', storeIDs: list.map((s) => s.id) });
+  const exact = stores.filter((s) => foldName(s.name) === foldName(q));
+  if (exact.length) return pick(exact);
+  const n = normalize(q);
+  const loose = n ? stores.filter((s) => normalize(s.name) === n) : [];
+  if (loose.length) return pick(loose);
+  return null;
+}
+// Full link for a store, built from the page's own address (works on a sub-path like /rightcard/).
+// Uses the store's name when it's unique (easy to read in Shortcuts), otherwise its id.
+export function storeLink(pageHref, store, stores = [store]) {
+  const u = new URL(pageHref);
+  const unique = store.name && stores.filter((s) => foldName(s.name) === foldName(store.name)).length === 1;
+  const value = unique ? store.name.trim().replace(/\s+/g, ' ') : store.id;
+  return `${u.origin}${u.pathname}?store=${encodeURIComponent(value)}`;
+}
+
 // ---------- Offers ----------
 export function offerLive(o, date) {
   const d = toDate(date);
@@ -341,6 +387,8 @@ export function recommend(cards, ctx, confidence = { type: 'manual' }) {
       rec.categoryNote = `Past purchases at ${s.name} counted as ${catName(ctx.category)} (${n} time${n === 1 ? '' : 's'}). It usually stays the same, but isn't guaranteed.`;
     } else if (confidence.type === 'mixed') {
       rec.categoryNote = `Past purchases at ${s.name} were counted differently (${confidence.categories.map(catName).join(', ')}). We're using ${catName(ctx.category)}.`;
+    } else if (confidence.type === 'unconfirmed' && s.placeKind) {
+      rec.categoryNote = `${placeKindInfo(s.placeKind).looksLike}, so we're using ${catName(ctx.category)}. That's a guess from public map data. Card companies decide how a store is classified, and it can differ.`;
     } else if (confidence.type === 'unconfirmed') {
       rec.categoryNote = `We're guessing ${s.name} counts as ${catName(ctx.category)}. Card companies decide how a store is coded, and it can differ. After you shop, check your statement and confirm it here.`;
     }
@@ -499,13 +547,100 @@ export function nearbyDecision(point, accuracy, stores) {
   return { type: 'ask', storeIDs: near.map((s) => s.id) };
 }
 
+// ---------- Nearby places directory (bundled OpenStreetMap data) ----------
+// Each kind maps to a *likely* app category. Card companies decide how a store is classified.
+export const PLACE_KINDS = {
+  gas: { category: 'gas', label: 'gas station' },
+  ev: { category: 'evCharging', label: 'EV charger' },
+  grocery: { category: 'groceries', label: 'grocery store' },
+  convenience: { category: 'other', label: 'convenience store' },
+  warehouse: { category: 'other', label: 'warehouse club' },
+  department: { category: 'other', label: 'department store' },
+  variety: { category: 'other', label: 'discount store' },
+  mall: { category: 'other', label: 'shopping mall' },
+  general: { category: 'other', label: 'general store' },
+  clothes: { category: 'other', label: 'clothing store' },
+  electronics: { category: 'other', label: 'electronics store' },
+  hardware: { category: 'other', label: 'hardware store' },
+  pharmacy: { category: 'other', label: 'pharmacy' },
+  restaurant: { category: 'restaurants', label: 'restaurant' },
+  fastfood: { category: 'restaurants', label: 'fast-food restaurant' },
+  cafe: { category: 'restaurants', label: 'café' },
+};
+export function placeKindInfo(kind) {
+  const k = PLACE_KINDS[kind] || { category: 'other', label: 'store' };
+  const article = /^[aeiou]/i.test(k.label) ? 'an' : 'a';
+  return { ...k, looksLike: `Looks like ${article} ${k.label}` };
+}
+export const PLACE_RANGE_METERS = 150;
+/** Turn a directory place into a temporary store object the recommender understands. */
+export function placeToStore(p) {
+  const info = placeKindInfo(p.k);
+  return {
+    id: p.id, name: p.n, brand: p.b || null, address: p.a || null, suggestedCategory: info.category,
+    location: { lat: p.la, lon: p.lo }, radius: PLACE_RANGE_METERS, acceptedNetworks: [], surchargePercent: 0,
+    confirmations: [], isStarter: false, isPlace: true, placeKind: p.k, note: null,
+  };
+}
+/** A saved store that is the same business as a directory place (same id, or same name/brand). */
+export function savedMatchForPlace(place, stores) {
+  const byID = stores.find((s) => s.id === place.id);
+  if (byID) return byID;
+  const names = [normalize(place.n), normalize(place.b)].filter(Boolean);
+  const cands = stores.filter((s) => names.includes(normalize(s.name)));
+  if (!cands.length) return null;
+  // Prefer one saved at this spot, then one with no location (a chain-wide entry like the starter "Publix").
+  const here = cands.find((s) => s.location && distanceMeters(s.location, { lat: place.la, lon: place.lo }) <= (s.radius || 150) + PLACE_RANGE_METERS);
+  return here || cands.find((s) => !s.location) || null;
+}
+/**
+ * "Find where I am": saved stores in range plus directory places within ~150 m.
+ * A directory place that matches a saved store is replaced by the saved store, so
+ * confirmed categories from past purchases win. Nearest first.
+ * Returns { type: 'none' } | { type: 'one', storeID } | { type: 'ask', storeIDs }, plus `stores`: temp place-stores used.
+ */
+export function whereAmI(point, accuracy, savedStores, places = []) {
+  const acc = Math.min(Math.max(accuracy || 0, 0), 100);
+  const hits = new Map(); // id -> distance
+  for (const s of savedStores) {
+    if (!s.location) continue;
+    const d = distanceMeters(s.location, point);
+    if (d <= (s.radius || 150) + acc) hits.set(s.id, d);
+  }
+  const temp = [];
+  for (const p of places) {
+    const d = distanceMeters({ lat: p.la, lon: p.lo }, point);
+    if (d > PLACE_RANGE_METERS + acc) continue;
+    const saved = savedMatchForPlace(p, savedStores);
+    if (saved) { if (!hits.has(saved.id) || hits.get(saved.id) > d) hits.set(saved.id, d); continue; }
+    hits.set(p.id, d);
+    temp.push(placeToStore(p));
+  }
+  const ids = [...hits.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
+  if (!ids.length) return { type: 'none', stores: [] };
+  if (ids.length === 1) return { type: 'one', storeID: ids[0], stores: temp };
+  return { type: 'ask', storeIDs: ids.slice(0, 8), stores: temp.filter((t) => ids.slice(0, 8).includes(t.id)) };
+}
+/** Search the directory by name or brand. Nearest first when a location is known, else by name. */
+export function searchPlaces(query, places, point = null, limit = 20) {
+  const q = normalize(query);
+  if (!q || q.length < 2) return [];
+  const hits = places.filter((p) => normalize(p.n).includes(q) || (p.b && normalize(p.b).includes(q)));
+  const dist = (p) => (point ? distanceMeters({ lat: p.la, lon: p.lo }, point) : 0);
+  return hits
+    .map((p) => ({ p, d: dist(p), pre: normalize(p.n).startsWith(q) }))
+    .sort((a, b) => (point ? a.d - b.d : (a.pre !== b.pre ? (a.pre ? -1 : 1) : a.p.n.localeCompare(b.p.n))))
+    .slice(0, limit)
+    .map(({ p, d }) => ({ ...p, distance: point ? d : null }));
+}
+
 // ---------- Screen state (manual flow is primary) ----------
 export function geoStatus(geoAvailable, permission) {
   // permission: 'granted' | 'denied' | 'prompt' | 'unknown'
-  const bg = 'Arrival notifications are not available on the website. They need the native iPhone app.';
+  const bg = 'Alerts when you arrive are not available on the website by itself. You can set them up with the iPhone Shortcuts app (see Settings).';
   if (!geoAvailable) return { canFindNearby: false, message: `This browser can't share location. Pick a store or category below. ${bg}` };
-  if (permission === 'denied') return { canFindNearby: false, message: `Location is blocked for this site, so "Find nearby" is off. Pick a store or category below. ${bg}` };
-  return { canFindNearby: true, message: `"Find nearby" checks your location only when you tap it, while the site is open. ${bg}` };
+  if (permission === 'denied') return { canFindNearby: false, message: `Location is blocked for this site, so "Find where I am" is off. Pick a store or category below. ${bg}` };
+  return { canFindNearby: true, message: `"Find where I am" checks your location only when you tap it or open the app (you can turn that off in Settings). Your location stays on this phone. ${bg}` };
 }
 
 export function bestCardScreen(data, personID, selection, amount, geo = { available: true, permission: 'prompt' }, now = new Date()) {
